@@ -1,0 +1,133 @@
+#### Exome DNA analysis
+
+#This code was executed in year 2012, software versions are outdated so it should be adapted to new tools and versions. 
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#Step 1: Fastq files Quality Control
+
+/FastQC/fastqc --outdir ./results --nogroup --thread 10 --java "/usr/java/latest/bin/java" "$@"
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#Step 2: Alignment
+# Align Tumor and Normal paired samples
+
+bowtie2=/apps/bowtie2
+ref_hg19b=/data/references/human/hg19/bowtie/hg19
+data=${path_data}/$run_name
+alignments= dir to /Alignments
+
+
+
+/bowtie2 --rg-id "ID:1" --rg "SM:colon" --rg "LB:exome" --rg "PL:illumina" -p 10 -t -x ${ref_hg19b} -1 ${data}/${Normal_sample1} -2 ${data}/${Normal_sample2} -S ${alignments}/Normal.sam 
+/bowtie2 --rg-id "ID:1" --rg "SM:colon" --rg "LB:exome" --rg "PL:illumina" -p 10 -t -x ${ref_hg19b} -1 ${data}/${Tumor_sample1} -2 ${data}/${Tumor_sample2} -S ${alignments}/Tumor.sam     
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#Step 3: Alignment manipulation using samtools .sam to binary .bam, order and create i­ndex for IGV visualization
+
+samtools=/apps/samtools
+alignments= dir to /Alignments
+
+
+cd ${alignments}
+
+$samtools view -bS -q 30 ${alignments}/Normal.sam -o ${alignments}/Normal.bam
+$samtools sort ${alignments}/Normal.bam ${alignments}/Normal_o
+$samtools view -b -h -F1292 ${alignments}/Normal_o.bam -o ${alignments}/Normal_o_ok.bam
+$samtools index ${alignments}/Normal_o_ok.bam
+
+$samtools view -bS -q 30 ${alignments}/Tumor.sam -o ${alignments}/Tumor.bam
+$samtools sort ${alignments}/Tumor.bam ${alignments}/Tumor_o
+$samtools view -b -h -F1292 ${alignments}/Tumor_o.bam -o ${alignments}/Tumor_o_ok.bam
+$samtools index ${alignments}/Tumor_o_ok.bam
+
+
+
+for fl in *.sam; do
+rm ${fl}
+done
+
+for fl in *_o.bam; do
+rm ${fl}
+done
+
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#Step 4: Variant calling with GATK
+
+java=/apps/java/jre/bin/java
+GATK=/soft/GATK/GenomeAnalysisTK
+ref_hg19=/reference/hg19/fasta
+dbsnp=/reference/gatk
+
+file= dir to /Alignments
+results= dir to /Variants
+
+
+for sample in ${file}/*_N.bam
+do
+
+out=${sample##*/}
+out=${out/bam/vcf}
+doT=0
+
+if [ ! -e ${results}/${out} ]; then
+
+touch ${results}/${out}
+
+if [ ! -e ${results}/${out/_N/_T} ]; then
+    touch ${results}/${out/_N/_T}
+    doT=1
+fi
+
+echo $out
+date
+$java $RAM -jar ${GATK}/GenomeAnalysisTK.jar -nt $CORES \
+   -R ${ref_hg19}/ucsc.hg19.fasta \
+   -T UnifiedGenotyper \
+   -I ${sample} \
+   --dbsnp ${dbsnp}/dbsnp_135.hg19.vcf \
+   -o ${results}/${out} \
+   --genotype_likelihoods_model BOTH \
+   -stand_call_conf 30 \
+   -stand_emit_conf 30 \
+   -l INFO
+fi
+if [ ! -e ${results}/${out/_N/_T} -o $doT -eq 1 ]; then
+
+touch ${results}/${out/_N/_T}
+echo ${out/_N/_T}
+date
+$java $RAM -jar ${GATK}/GenomeAnalysisTK.jar -nt $CORES \
+   -R ${ref_hg19}/ucsc.hg19.fasta \
+   -T UnifiedGenotyper \
+   -I ${sample/_N/_T} \
+   --dbsnp ${dbsnp}/dbsnp_135.hg19.vcf \
+   -o ${results}/${out/_N/_T} \
+   --genotype_likelihoods_model BOTH \
+   -stand_call_conf 30 \
+   -stand_emit_conf 30 \
+   -l INFO \
+   -comp:gl ${results}/${out}
+fi
+
+if [ -e ${results}/stop ]; then
+  break
+fi
+
+done
+date
+
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#Step 5: Annotation with SeattleSeq annotation tool
+
+In R, we prepared a matrix with all unique variants appeared in Tumor and Normal samples.
+We extracted from Tumor variants, all variants present in 1000G project and also all variants present in Normal samples pool.
+Prepared remaining unique Tumor variants in format required by SeattleSeq annotation tool to annotate them.
+Annotate with SeattleSeqAnnotation tool (https://snp.gs.washington.edu/SeattleSeqAnnotation153/HelpBuildNotes.jsp)
+
+
+#-----------------------------------------------------------------------------------------------------------------------------------------
+#Step 6: Filtering variants with R
+
+We red files with annotated variants into R and applied filters to remove false positives (allele frequency, coverage, functional impact) 
